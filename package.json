@@ -1,0 +1,53 @@
+{
+  "name": "chatbot-recherche-stage",
+  "version": "1.0.0",
+  "description": "Chatbot IA + NLP pour la recherche de stage adaptative",
+  "homepage": "https://github.com/fatmamoussa/chatbot-recherche-de-stage#readme",
+  "bugs": {
+    "url": "https://github.com/fatmamoussa/chatbot-recherche-de-stage/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fatmamoussa/chatbot-recherche-de-stage.git"
+  },
+  "keywords": [
+    "chatbot",
+    "nlp",
+    "ia",
+    "stage",
+    "tailwind",
+    "cv-analyzer"
+  ],
+  "author": "Fatma Moussa",
+  "license": "ISC",
+  "main": "src/app.js",
+  "scripts": {
+    "dev": "npx tailwindcss -i ./src/input.css -o ./public/css/style.css --watch",
+    "build": "npx tailwindcss -i ./src/input.css -o ./public/css/style.css --minify",
+    "start": "node src/app.js",
+    "dev:full": "concurrently \"npm run dev\" \"node src/app.js\"",
+    "lint": "eslint src/",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "pdf-parse": "^1.1.1",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.0",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.32",
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.0.1",
+    "prettier": "^3.1.0",
+    "prettier-plugin-tailwindcss": "^0.5.7",
+    "@tailwindcss/forms": "^0.5.7",
+    "@tailwindcss/typography": "^0.5.10",
+    "eslint": "^8.53.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,4 +1,4 @@
-# questions.py
+
 
 ADAPTIVE_QUESTIONS = {
     "python": {
@@ -359,6 +359,72 @@ ADAPTIVE_QUESTIONS = {
             {"q": "Fichier de config ?", "a": ["JSON", "YAML", "TXT"], "correct": 1}
         ]
     }
+}
+
+# Configuration des niveaux
+LEVEL_THRESHOLDS = {
+    "Débutant": 0,
+    "Intermédiaire": 100,
+    "Avancé": 300,
+    "Expert": 600,
+    "Maître": 1000
+}
+
+LEVEL_NAMES = list(LEVEL_THRESHOLDS.keys())
+
+# Récompenses par niveau
+LEVEL_REWARDS = {
+    "Débutant": {
+        "icon": "🌱",
+        "color": "gray",
+        "badge": "badge-gray-100",
+        "message": "Bienvenue débutant ! Commencez votre voyage d'apprentissage."
+    },
+    "Intermédiaire": {
+        "icon": "🚀",
+        "color": "blue",
+        "badge": "badge-blue-100",
+        "message": "Félicitations ! Vous progressez bien. Continuez ainsi !"
+    },
+    "Avancé": {
+        "icon": "⚡",
+        "color": "purple",
+        "badge": "badge-purple-100",
+        "message": "Impressionnant ! Vos compétences sont maintenant avancées."
+    },
+    "Expert": {
+        "icon": "🏆",
+        "color": "yellow",
+        "badge": "badge-yellow-100",
+        "message": "Expert reconnu ! Vous maîtrisez cette technologie."
+    },
+    "Maître": {
+        "icon": "👑",
+        "color": "red",
+        "badge": "badge-red-100",
+        "message": "Niveau Maître atteint ! Vous êtes parmi les meilleurs."
+    }
+}
+
+# XP par difficulté
+XP_BY_DIFFICULTY = {
+    "easy": 10,
+    "medium": 20,
+    "hard": 30
+}
+
+# XP bonus pour bonnes réponses
+XP_CORRECT_ANSWER = {
+    "easy": 5,
+    "medium": 10,
+    "hard": 15
+}
+
+# XP bonus pour streak
+STREAK_BONUS = {
+    3: 10,  # 3 réponses correctes d'affilée
+    5: 25,  # 5 réponses correctes d'affilée
+    10: 50  # 10 réponses correctes d'affilée
 }
 
 # Skills reconnus dans CV

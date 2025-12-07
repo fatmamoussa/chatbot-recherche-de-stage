@@ -1,35 +1,44 @@
 import sys
 import asyncio
 import os
-from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, UploadFile, File, Request
+import json
+from typing import List, Optional, Dict, Any, Tuple
+from fastapi import FastAPI, UploadFile, File, Request, WebSocket, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import fitz  # PyMuPDF
 import spacy
 import random
-from questions import ADAPTIVE_QUESTIONS
+from datetime import datetime
+from questions import ADAPTIVE_QUESTIONS, LEVEL_THRESHOLDS, LEVEL_REWARDS, XP_BY_DIFFICULTY, XP_CORRECT_ANSWER, STREAK_BONUS
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from study_sites import STUDY_SITES
 
 # Event loop Windows
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # FastAPI
-app = FastAPI(title="Chatbot Stage IA + NLP (Quiz Adaptatif)")
+app = FastAPI(title="Chatbot Stage IA + NLP (Système de Niveaux)")
 
 # Static & Templates
 BASE_DIR = os.path.dirname(__file__)
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
+# Fichier de stockage des niveaux utilisateurs
+USER_PROGRESS_FILE = os.path.join(DATA_DIR, "user_progress.json")
 
 # spaCy modèle français
 try:
@@ -69,6 +78,241 @@ def extract_skills_sync(text: str) -> List[str]:
 async def extract_skills(text: str) -> List[str]:
     return await asyncio.to_thread(extract_skills_sync, text)
 
+# ========================================
+# SYSTÈME DE NIVEAUX ET PROGRESSION
+# ========================================
+
+def load_user_progress(user_id: str = "default") -> Dict[str, Any]:
+    """Charge la progression de l'utilisateur"""
+    try:
+        if os.path.exists(USER_PROGRESS_FILE):
+            with open(USER_PROGRESS_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get(user_id, {
+                    "user_id": user_id,
+                    "skills": {},
+                    "total_xp": 0,
+                    "global_level": "Débutant",
+                    "level_up_history": [],
+                    "created_at": datetime.now().isoformat()
+                })
+    except:
+        pass
+    
+    return {
+        "user_id": user_id,
+        "skills": {},
+        "total_xp": 0,
+        "global_level": "Débutant",
+        "level_up_history": [],
+        "created_at": datetime.now().isoformat()
+    }
+
+def save_user_progress(user_id: str, progress: Dict[str, Any]):
+    """Sauvegarde la progression de l'utilisateur"""
+    try:
+        data = {}
+        if os.path.exists(USER_PROGRESS_FILE):
+            with open(USER_PROGRESS_FILE, 'r') as f:
+                data = json.load(f)
+        
+        data[user_id] = progress
+        
+        with open(USER_PROGRESS_FILE, 'w') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except:
+        pass
+
+def calculate_xp_earned(skill: str, answers: List[int], questions: List[Dict]) -> Dict[str, Any]:
+    """Calcule l'XP gagné pour une session de quiz"""
+    total_xp = 0
+    correct_count = 0
+    streak = 0
+    max_streak = 0
+    xp_details = []
+    
+    for i, (answer, question) in enumerate(zip(answers, questions)):
+        difficulty = question.get("level", "easy")
+        base_xp = XP_BY_DIFFICULTY.get(difficulty, 10)
+        
+        # XP de base pour la question
+        question_xp = base_xp
+        
+        # Vérifier si la réponse est correcte
+        is_correct = answer == question["correct"]
+        
+        if is_correct:
+            correct_count += 1
+            streak += 1
+            max_streak = max(max_streak, streak)
+            
+            # Bonus pour bonne réponse
+            bonus_xp = XP_CORRECT_ANSWER.get(difficulty, 5)
+            question_xp += bonus_xp
+            
+            # Bonus pour streak
+            if streak in STREAK_BONUS:
+                streak_bonus = STREAK_BONUS[streak]
+                question_xp += streak_bonus
+        else:
+            streak = 0
+        
+        total_xp += question_xp
+        
+        xp_details.append({
+            "question_index": i,
+            "difficulty": difficulty,
+            "is_correct": is_correct,
+            "base_xp": base_xp,
+            "bonus_xp": question_xp - base_xp,
+            "total_xp": question_xp,
+            "streak": streak
+        })
+    
+    # Bonus de session pour bon score
+    if correct_count >= len(questions) * 0.8:  # 80% ou plus de bonnes réponses
+        session_bonus = 50
+        total_xp += session_bonus
+        xp_details.append({
+            "type": "session_bonus",
+            "reason": "Score élevé (>80%)",
+            "bonus_xp": session_bonus
+        })
+    
+    return {
+        "total_xp_earned": total_xp,
+        "correct_count": correct_count,
+        "total_questions": len(questions),
+        "accuracy": correct_count / len(questions) if questions else 0,
+        "max_streak": max_streak,
+        "xp_details": xp_details
+    }
+
+def update_skill_level(skill: str, xp_earned: int, current_progress: Dict[str, Any]) -> Dict[str, Any]:
+    """Met à jour le niveau d'une compétence"""
+    skill_data = current_progress.get("skills", {}).get(skill, {
+        "skill": skill,
+        "xp": 0,
+        "level": "Débutant",
+        "questions_answered": 0,
+        "correct_answers": 0,
+        "accuracy": 0,
+        "last_practiced": None
+    })
+    
+    # Mettre à jour l'XP
+    old_xp = skill_data["xp"]
+    new_xp = old_xp + xp_earned
+    
+    # Trouver l'ancien niveau
+    old_level = skill_data["level"]
+    new_level = old_level
+    
+    # Déterminer le nouveau niveau
+    for level_name, threshold in sorted(LEVEL_THRESHOLDS.items(), key=lambda x: x[1]):
+        if new_xp >= threshold:
+            new_level = level_name
+    
+    # Vérifier le level up
+    level_up = old_level != new_level
+    level_up_info = None
+    
+    if level_up:
+        level_up_info = {
+            "skill": skill,
+            "old_level": old_level,
+            "new_level": new_level,
+            "old_xp": old_xp,
+            "new_xp": new_xp,
+            "xp_earned": xp_earned,
+            "timestamp": datetime.now().isoformat(),
+            "reward": LEVEL_REWARDS.get(new_level, {})
+        }
+        
+        # Ajouter à l'historique
+        current_progress["level_up_history"].append(level_up_info)
+    
+    # Mettre à jour les données de la compétence
+    skill_data.update({
+        "xp": new_xp,
+        "level": new_level,
+        "questions_answered": skill_data.get("questions_answered", 0) + 1,
+        "correct_answers": skill_data.get("correct_answers", 0) + (xp_earned // 10),  # Estimation
+        "last_practiced": datetime.now().isoformat(),
+        "accuracy": skill_data.get("accuracy", 0)  # À calculer proprement
+    })
+    
+    # Mettre à jour dans la progression
+    if "skills" not in current_progress:
+        current_progress["skills"] = {}
+    current_progress["skills"][skill] = skill_data
+    
+    # Mettre à jour l'XP global
+    current_progress["total_xp"] = current_progress.get("total_xp", 0) + xp_earned
+    
+    # Mettre à jour le niveau global
+    global_xp = current_progress["total_xp"]
+    global_level = "Débutant"
+    for level_name, threshold in sorted(LEVEL_THRESHOLDS.items(), key=lambda x: x[1]):
+        if global_xp >= threshold:
+            global_level = level_name
+    current_progress["global_level"] = global_level
+    
+    return {
+        "skill_progress": skill_data,
+        "level_up": level_up_info,
+        "global_progress": {
+            "total_xp": current_progress["total_xp"],
+            "global_level": global_level
+        }
+    }
+
+def get_level_progress(xp: int, current_level: str) -> Dict[str, Any]:
+    """Calcule la progression vers le prochain niveau"""
+    levels = list(LEVEL_THRESHOLDS.keys())
+    
+    if current_level not in levels:
+        return {"progress_percent": 0, "xp_to_next": 0}
+    
+    current_index = levels.index(current_level)
+    
+    # Si c'est le niveau maximum
+    if current_index == len(levels) - 1:
+        return {
+            "current_level": current_level,
+            "next_level": None,
+            "xp_current": xp,
+            "xp_needed": 0,
+            "progress_percent": 100,
+            "is_max_level": True
+        }
+    
+    # Niveau suivant
+    next_level = levels[current_index + 1]
+    current_threshold = LEVEL_THRESHOLDS[current_level]
+    next_threshold = LEVEL_THRESHOLDS[next_level]
+    
+    xp_in_level = xp - current_threshold
+    xp_needed = next_threshold - current_threshold
+    
+    progress_percent = (xp_in_level / xp_needed) * 100 if xp_needed > 0 else 0
+    
+    return {
+        "current_level": current_level,
+        "next_level": next_level,
+        "xp_current": xp_in_level,
+        "xp_needed": xp_needed,
+        "progress_percent": min(100, progress_percent),
+        "is_max_level": False
+    }
+
+def get_level_badge(level: str) -> Dict[str, Any]:
+    """Retourne les informations du badge de niveau"""
+    return LEVEL_REWARDS.get(level, LEVEL_REWARDS["Débutant"])
+
+# ========================================
+# GÉNÉRATION DU QUIZ
+# ========================================
 
 LEVELS = ["easy", "medium", "hard"]
 
@@ -78,31 +322,45 @@ def generate_question(skill: str, level: str, used_questions: List[str]) -> Opti
         return None
     q = random.choice(questions_list).copy()
     q["level"] = level
+    q["time_limit"] = 50
     return q
 
 async def create_adaptive_quiz(skills: List[str], num_questions: int = 3):
+    """Crée un quiz adaptatif basé sur les compétences"""
     quiz_data = []
     for skill in skills:
         used = []
         skill_quiz = []
         level_idx = 0
+        
         for _ in range(num_questions):
             level = LEVELS[level_idx]
             q = generate_question(skill, level, used)
+            
             if not q:
                 for lvl in LEVELS:
                     q = generate_question(skill, lvl, used)
                     if q:
                         break
+            
             if not q:
                 break
+            
             skill_quiz.append(q)
             used.append(q["q"])
+        
         if skill_quiz:
-            quiz_data.append({"skill": skill, "questions": skill_quiz, "used_questions": used})
+            quiz_data.append({
+                "skill": skill, 
+                "questions": skill_quiz, 
+                "used_questions": used,
+                "skill_info": get_level_badge("Débutant")  # Niveau initial
+            })
+    
     return quiz_data
 
 def update_level(level: str, correct: bool) -> str:
+    """Met à jour le niveau de difficulté basé sur la réponse"""
     idx = LEVELS.index(level)
     if correct and idx < len(LEVELS) - 1:
         return LEVELS[idx + 1]
@@ -110,9 +368,9 @@ def update_level(level: str, correct: bool) -> str:
         return LEVELS[idx - 1]
     return level
 
-# ============================
-# Scraping Indeed (selenium)
-# ============================
+# ========================================
+# SCRAPING INDEED
+# ========================================
 def scrape_indeed_selenium(keyword, max_pages=2, max_offers=2):
     offers = []
     seen_links = set()
@@ -191,15 +449,24 @@ async def real_job_offers(skills: List[str]):
             results.append({"error": str(e)})
     return results
 
-# ============================
-# Routes FastAPI
-# ============================
+async def real_job_offers(skills: List[str]):
+    """Récupère les offres d'emploi pour les compétences validées"""
+    results = []
+    for skill in skills:
+        try:
+            offers = await asyncio.to_thread(scrape_indeed_selenium, skill)
+            results.extend(offers)
+        except Exception as e:
+            results.append({"error": str(e)})
+    return results
+
+# ========================================
+# ROUTES FASTAPI
+# ========================================
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    try:
-        return templates.TemplateResponse("index.html", {"request": request})
-    except Exception:
-        return HTMLResponse("<h1>Bienvenue - Chatbot Stage IA + NLP</h1><p>Upload votre CV via /upload-cv/</p>")
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/upload-cv/")
 async def upload_cv(file: UploadFile = File(...)):
@@ -207,85 +474,192 @@ async def upload_cv(file: UploadFile = File(...)):
         content = await file.read()
         text = await extract_text_from_pdf_bytes(content)
         skills = await extract_skills(text)
+        
+        if not skills:
+            return JSONResponse({
+                "error": "Aucune compétence détectée dans votre CV",
+                "message": "Essayez avec un CV contenant des technologies comme Python, JavaScript, React, etc."
+            })
+        
+        # Charger la progression utilisateur
+        user_progress = load_user_progress()
+        
+        # Ajouter les infos de niveau aux compétences
+        enhanced_skills = []
+        for skill in skills:
+            skill_progress = user_progress.get("skills", {}).get(skill, {
+                "level": "Débutant",
+                "xp": 0
+            })
+            enhanced_skills.append({
+                "skill": skill,
+                "current_level": skill_progress["level"],
+                "xp": skill_progress["xp"],
+                "badge": get_level_badge(skill_progress["level"])
+            })
+        
+        # Créer le quiz
         dynamic_quiz = await create_adaptive_quiz(skills, num_questions=3)
-        return {"quiz": dynamic_quiz, "extracted_skills": skills}
+        
+        return {
+            "quiz": dynamic_quiz,
+            "skills": enhanced_skills,
+            "user_progress": {
+                "global_level": user_progress.get("global_level", "Débutant"),
+                "total_xp": user_progress.get("total_xp", 0)
+            },
+            "message": f"✅ {len(skills)} compétence(s) détectée(s)"
+        }
+        
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-    
-    
+
 @app.post("/submit-quiz/")
 async def submit_quiz(data: Dict[str, Any]):
     try:
         answers = data.get("answers", {})
-        previous_quiz = data.get("quiz_data", {})  # contient questions et used_questions
+        previous_quiz = data.get("quiz_data", {})
+        user_id = data.get("user_id", "default")
+        
+        # Charger la progression actuelle
+        user_progress = load_user_progress(user_id)
+        
         results = []
         validated_skills = []
-
+        level_up_notifications = []
+        
         for skill, user_ans_list in answers.items():
             skill_quiz = previous_quiz.get(skill, {})
             questions = skill_quiz.get("questions", [])
-            used_questions = skill_quiz.get("used_questions", [])
-            correct_count = 0
-            current_level = "easy"
-
-            # Vérifier les réponses et générer la prochaine question adaptative immédiatement
-            next_quiz = []
-
-            for i, ans in enumerate(user_ans_list):
-                if i >= len(questions):
-                    continue
-                correct_index = questions[i]["correct"]
-                is_correct = ans == correct_index
-                if is_correct:
-                    correct_count += 1
-
-                # Marquer la question comme utilisée
-                used_questions.append(questions[i]["q"])
-
-                # Mettre à jour le niveau pour la prochaine question
-                current_level = update_level(current_level, is_correct)
-
-                # Générer la prochaine question adaptative si on n’a pas atteint le nombre maximum
-                if len(next_quiz) < 3:
-                    q = generate_question(skill, current_level, used_questions)
-                    if q:
-                        next_quiz.append(q)
-                        used_questions.append(q["q"])
-
-            # Calcul du score correct
+            
+            if not questions:
+                continue
+            
+            # Calculer le score
+            correct_count = sum(1 for i, ans in enumerate(user_ans_list) 
+                              if i < len(questions) and ans == questions[i]["correct"])
             total_questions = len(user_ans_list)
             score = int((correct_count / total_questions) * 100) if total_questions > 0 else 0
-
-            # Sites d’apprentissage si score < 50
+            
+            # Calculer l'XP gagné
+            xp_result = calculate_xp_earned(skill, user_ans_list, questions)
+            
+            # Mettre à jour le niveau
+            update_result = update_skill_level(skill, xp_result["total_xp_earned"], user_progress)
+            
+            # Vérifier le level up
+            if update_result["level_up"]:
+                level_up_notifications.append(update_result["level_up"])
+            
+            # Progression vers le prochain niveau
+            skill_progress = update_result["skill_progress"]
+            level_progress = get_level_progress(
+                skill_progress["xp"], 
+                skill_progress["level"]
+            )
+            
+            # Sites d'apprentissage si score < 50
             study_sites = []
             if score < 50:
-                if skill == "python":
-                    study_sites = ["https://www.learnpython.org/", "https://realpython.com/"]
-                elif skill == "java":
-                    study_sites = ["https://www.w3schools.com/java/", "https://www.geeksforgeeks.org/java/"]
-
-            # Ajouter les résultats du skill
+                study_sites = STUDY_SITES.get(skill, [])
+            
+            # Ajouter aux résultats
             results.append({
                 "skill": skill,
                 "score": score,
                 "passed": score >= 50,
                 "study_sites": study_sites,
-                "next_adaptive_questions": next_quiz
+                "xp_earned": xp_result["total_xp_earned"],
+                "current_level": skill_progress["level"],
+                "level_progress": level_progress,
+                "badge": get_level_badge(skill_progress["level"]),
+                "accuracy": xp_result["accuracy"],
+                "streak": xp_result["max_streak"],
+                "details": xp_result
             })
-
+            
             if score >= 50:
                 validated_skills.append(skill)
-
-        # Offres pour les compétences validées
+        
+        # Sauvegarder la progression
+        save_user_progress(user_id, user_progress)
+        
+        # Offres d'emploi pour les compétences validées
         offers = await real_job_offers(validated_skills) if validated_skills else []
-
-        return {"quiz_results": results, "offers": offers}
-
+        
+        # Statistiques globales
+        global_stats = {
+            "total_xp": user_progress.get("total_xp", 0),
+            "global_level": user_progress.get("global_level", "Débutant"),
+            "skills_learned": len(user_progress.get("skills", {})),
+            "total_questions_answered": sum(
+                s.get("questions_answered", 0) 
+                for s in user_progress.get("skills", {}).values()
+            )
+        }
+        
+        return {
+            "quiz_results": results,
+            "offers": offers,
+            "validated_skills": validated_skills,
+            "level_up_notifications": level_up_notifications,
+            "global_stats": global_stats,
+            "user_progress": user_progress
+        }
+        
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+@app.get("/user-progress/{user_id}")
+async def get_user_progress(user_id: str):
+    """Récupère la progression d'un utilisateur"""
+    progress = load_user_progress(user_id)
+    
+    # Calculer les statistiques détaillées
+    skills_progress = []
+    for skill, data in progress.get("skills", {}).items():
+        level_progress = get_level_progress(data["xp"], data["level"])
+        skills_progress.append({
+            "skill": skill,
+            **data,
+            "level_progress": level_progress,
+            "badge": get_level_badge(data["level"])
+        })
+    
+    # Trier par XP
+    skills_progress.sort(key=lambda x: x["xp"], reverse=True)
+    
+    return {
+        "user_id": user_id,
+        "global_stats": {
+            "total_xp": progress.get("total_xp", 0),
+            "global_level": progress.get("global_level", "Débutant"),
+            "skills_count": len(skills_progress),
+            "level_up_count": len(progress.get("level_up_history", []))
+        },
+        "skills": skills_progress,
+        "level_up_history": progress.get("level_up_history", [])[-10:],  # 10 derniers level ups
+        "created_at": progress.get("created_at")
+    }
 
-
+@app.post("/reset-progress/{user_id}")
+async def reset_progress(user_id: str):
+    """Réinitialise la progression d'un utilisateur"""
+    progress = {
+        "user_id": user_id,
+        "skills": {},
+        "total_xp": 0,
+        "global_level": "Débutant",
+        "level_up_history": [],
+        "created_at": datetime.now().isoformat()
+    }
+    
+    save_user_progress(user_id, progress)
+    
+    return {
+        "message": "Progression réinitialisée avec succès",
+        "new_progress": progress
+    }
 
 if __name__ == "__main__":
     import uvicorn
