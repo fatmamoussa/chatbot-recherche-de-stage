@@ -439,26 +439,36 @@ def scrape_indeed_selenium(keyword, max_pages=2, max_offers=2):
         offers.append({"error": f"Aucune offre récente trouvée pour {keyword}.", "matched_skill": keyword})
     return offers
 
-async def real_job_offers(skills: List[str]):
-    results = []
+async def real_job_offers_by_skill(skills: List[str], offers_per_skill: int = 2):
+    """Récupère des offres d'emploi pour chaque compétence validée"""
+    all_offers = []
+    
+    # Pour chaque compétence, chercher des offres
     for skill in skills:
         try:
-            offers = await asyncio.to_thread(scrape_indeed_selenium, skill)
-            results.extend(offers)
+            # Scraper pour cette compétence
+            skill_offers = await asyncio.to_thread(
+                scrape_indeed_selenium, 
+                skill, 
+                max_pages=1, 
+                max_offers=offers_per_skill
+            )
+            
+            # Ajouter le nom de la compétence à chaque offre
+            for offer in skill_offers:
+                offer["skill"] = skill
+                all_offers.append(offer)
+                
         except Exception as e:
-            results.append({"error": str(e)})
-    return results
-
-async def real_job_offers(skills: List[str]):
-    """Récupère les offres d'emploi pour les compétences validées"""
-    results = []
-    for skill in skills:
-        try:
-            offers = await asyncio.to_thread(scrape_indeed_selenium, skill)
-            results.extend(offers)
-        except Exception as e:
-            results.append({"error": str(e)})
-    return results
+            print(f"Erreur pour {skill}: {str(e)}")
+            # Ajouter un message d'erreur pour cette compétence
+            all_offers.append({
+                "error": f"Erreur de scraping pour {skill}",
+                "skill": skill,
+                "matched_skill": skill
+            })
+    
+    return all_offers
 
 # ========================================
 # ROUTES FASTAPI
@@ -513,7 +523,6 @@ async def upload_cv(file: UploadFile = File(...)):
         
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-
 @app.post("/submit-quiz/")
 async def submit_quiz(data: Dict[str, Any]):
     try:
@@ -584,8 +593,16 @@ async def submit_quiz(data: Dict[str, Any]):
         # Sauvegarder la progression
         save_user_progress(user_id, user_progress)
         
-        # Offres d'emploi pour les compétences validées
-        offers = await real_job_offers(validated_skills) if validated_skills else []
+        # Offres d'emploi pour TOUTES les compétences validées (2 offres par compétence)
+        offers = []
+        if validated_skills:
+            offers = await real_job_offers_by_skill(validated_skills, offers_per_skill=2)
+        
+        # Grouper les offres par compétence pour l'affichage
+        offers_by_skill = {}
+        for skill in validated_skills:
+            skill_offers = [o for o in offers if o.get("skill") == skill]
+            offers_by_skill[skill] = skill_offers
         
         # Statistiques globales
         global_stats = {
@@ -600,7 +617,8 @@ async def submit_quiz(data: Dict[str, Any]):
         
         return {
             "quiz_results": results,
-            "offers": offers,
+            "offers": offers,  # Toutes les offres
+            "offers_by_skill": offers_by_skill,  # Offres groupées par compétence
             "validated_skills": validated_skills,
             "level_up_notifications": level_up_notifications,
             "global_stats": global_stats,

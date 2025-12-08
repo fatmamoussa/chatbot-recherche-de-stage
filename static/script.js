@@ -1,3 +1,4 @@
+// script.js
 document.addEventListener("DOMContentLoaded", () => {
     // Éléments DOM
     const cvForm = document.getElementById("cvForm");
@@ -456,6 +457,12 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             
             const data = await response.json();
+            
+            // Debug: afficher les données reçues
+            console.log("Données reçues du backend:", data);
+            console.log("Compétences validées:", data.validated_skills);
+            console.log("Offres par compétence:", data.offers_by_skill);
+            
             loading.classList.add("hidden");
             displayResults(data);
             
@@ -474,6 +481,128 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Afficher les résultats
     function displayResults(data) {
+        // Section des offres d'emploi - CORRIGÉE
+        let offersSection = '';
+        if (data.validated_skills && data.validated_skills.length > 0) {
+            // Calculer les compétences avec des offres réelles
+            let skillsWithRealOffers = 0;
+            
+            // Construire le HTML des offres
+            let offersHTML = '';
+            
+            // Pour chaque compétence validée
+            data.validated_skills.forEach(skill => {
+                // Récupérer les offres pour cette compétence
+                const offersForSkill = data.offers_by_skill ? 
+                    (data.offers_by_skill[skill] || []) : 
+                    [];
+                
+                // Prendre au maximum 2 offres par compétence
+                const displayOffers = offersForSkill.slice(0, 2);
+                
+                // Si pas d'offres, créer une offre par défaut
+                let finalOffers = displayOffers;
+                if (displayOffers.length === 0) {
+                    finalOffers = [{
+                        title: `Développeur ${skill}`,
+                        company: 'Recherche en cours...',
+                        link: `https://www.indeed.com/jobs?q=${skill}`,
+                        matched_skill: skill,
+                        is_default: true
+                    }];
+                } else {
+                    skillsWithRealOffers++;
+                }
+                
+                // Générer le HTML pour chaque offre de cette compétence
+                finalOffers.forEach((offer, idx) => {
+                    const isDefault = offer.is_default || false;
+                    const badgeColor = isDefault ? 'yellow' : 'blue';
+                    const badgeText = isDefault ? 'Recherche automatique' : 'Offre réelle';
+                    const buttonClass = isDefault ? 
+                        'bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600' : 
+                        'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700';
+                    const buttonText = isDefault ? 'Rechercher cette compétence →' : 'Voir cette offre →';
+                    const icon = isDefault ? '🔍' : '💼';
+                    
+                    offersHTML += `
+                        <div class="bg-white rounded-xl shadow-md border ${isDefault ? 'border-yellow-200' : 'border-blue-200'} hover:shadow-lg transition-shadow duration-300">
+                            <div class="p-6">
+                                <!-- Badge de compétence -->
+                                <div class="flex items-center justify-between mb-4">
+                                    <div class="flex items-center">
+                                        <div class="w-10 h-10 ${isDefault ? 'bg-yellow-100' : 'bg-blue-100'} rounded-full flex items-center justify-center mr-3">
+                                            <span class="${isDefault ? 'text-yellow-600' : 'text-blue-600'}">${icon}</span>
+                                        </div>
+                                        <div>
+                                            <div class="font-bold text-gray-800">${skill.charAt(0).toUpperCase() + skill.slice(1)}</div>
+                                            <div class="text-sm ${isDefault ? 'text-yellow-600' : 'text-blue-600'}">
+                                                ${badgeText}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <span class="text-xs text-gray-500">${idx + 1}</span>
+                                </div>
+                                
+                                <!-- Détails de l'offre -->
+                                <h4 class="text-lg font-bold text-gray-900 mb-2">${offer.title}</h4>
+                                <p class="text-gray-700 mb-4">${offer.company}</p>
+                                
+                                <!-- Bouton -->
+                                <a href="${offer.link}" target="_blank"
+                                   class="block w-full text-center py-3 ${buttonClass} text-white rounded-lg transition-all duration-200 font-medium">
+                                    ${buttonText}
+                                </a>
+                            </div>
+                        </div>
+                    `;
+                });
+            });
+            
+            // Note sur les compétences sans offres réelles
+            let noteHTML = '';
+            if (skillsWithRealOffers < data.validated_skills.length) {
+                noteHTML = `
+                    <div class="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                        <div class="flex items-center">
+                            <span class="text-yellow-600 mr-2">ℹ️</span>
+                            <div>
+                                <p class="text-yellow-800">
+                                    <span class="font-bold">Note :</span> 
+                                    ${data.validated_skills.length - skillsWithRealOffers} 
+                                    compétence(s) sur ${data.validated_skills.length} n'ont pas d'offres récentes disponibles. 
+                                    Cliquez sur "Rechercher cette compétence" pour trouver des offres manuellement.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            offersSection = `
+                <div class="mb-8">
+                    <div class="flex items-center justify-between mb-6">
+                        <div>
+                            <h3 class="text-2xl font-bold text-gray-800 flex items-center">
+                                <span class="mr-2">💼</span> Offres d'emploi
+                            </h3>
+                            <p class="text-gray-600">Correspondant à vos compétences validées</p>
+                        </div>
+                        <div class="text-sm text-gray-500">
+                            ${data.validated_skills.length} compétence(s)
+                        </div>
+                    </div>
+                    
+                    <!-- Affichage des offres -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        ${offersHTML}
+                    </div>
+                    
+                    ${noteHTML}
+                </div>
+            `;
+        }
+        
         results.innerHTML = `
             <div class="animate-slide-in">
                 ${data.level_up_notifications && data.level_up_notifications.length > 0 ? `
@@ -656,39 +785,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 ` : ''}
                 
                 <!-- Offres d'emploi -->
-                ${data.offers && data.offers.length > 0 ? `
-                    <div class="mb-8">
-                        <h3 class="text-2xl font-bold text-gray-800 mb-6 flex items-center">
-                            <span class="mr-2">💼</span> Offres correspondant à vos compétences
-                        </h3>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            ${data.offers.slice(0, 4).map((offer, idx) => `
-                                <div class="bg-white rounded-xl shadow-md border border-gray-200 hover:shadow-lg transition-shadow duration-300">
-                                    <div class="p-6">
-                                        <div class="flex justify-between items-start mb-4">
-                                            <div>
-                                                <div class="flex items-center mb-2">
-                                                    <span class="px-2 py-1 bg-blue-100 text-blue-800 text-xs font-medium rounded mr-2">
-                                                        ${offer.matched_skill || 'Compétence'}
-                                                    </span>
-                                                    <span class="text-xs text-gray-500">#${idx + 1}</span>
-                                                </div>
-                                                <h4 class="text-lg font-bold text-gray-900 mb-1">${offer.title || 'Offre'}</h4>
-                                                <p class="text-gray-600">${offer.company || 'Entreprise'}</p>
-                                            </div>
-                                        </div>
-                                        ${offer.link ? `
-                                            <a href="${offer.link}" target="_blank" 
-                                               class="block w-full text-center py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all duration-200 font-medium">
-                                                Voir l'offre →
-                                            </a>
-                                        ` : ''}
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                ` : ''}
+                ${offersSection}
                 
                 <!-- Boutons d'action -->
                 <div class="flex flex-col sm:flex-row gap-4 mt-8">
@@ -697,7 +794,10 @@ document.addEventListener("DOMContentLoaded", () => {
                         <i class="fas fa-redo mr-2"></i>Nouveau Quiz
                     </button>
                     
-                   
+                    <button onclick="showProgressDashboard()" 
+                            class="flex-1 px-8 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-xl hover:from-purple-700 hover:to-pink-700 transition-all duration-200 font-bold text-lg shadow-lg hover:shadow-xl">
+                        <i class="fas fa-chart-line mr-2"></i>Voir ma progression
+                    </button>
                 </div>
             </div>
         `;
